@@ -10,5 +10,5 @@ GIAPHA_TEN_HO = "Gia phả họ Nguyễn"
 [[d1_databases]]
 binding = "DB"
 database_name = "giapha"
-database_id = "CHUA_TAO"
+database_id = "2ae22d92-bfee-45dd-b904-8d833d477625"
 migrations_dir = "migrations"
