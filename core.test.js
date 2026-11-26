@@ -32,7 +32,9 @@ const CSV = [
 
 test('checkConfig bắt cấu hình yếu', () => {
   assert.strictEqual(checkConfig(cfg), null);
-  assert.match(checkConfig({ ...cfg, MK_SUA: cfg.MK_XEM }), /GIAPHA_MAT_KHAU/);
+  assert.match(checkConfig({ ...cfg, MK_SUA: 'xem-1234567890', MK_XEM: 'xem-1234567890' }), /giống nhau/);
+  assert.match(checkConfig({ ...cfg, MK_XEM: '' }), /chưa có GIAPHA_MAT_KHAU_XEM/);
+  assert.match(checkConfig({ ...cfg, MK_SUA: 'ngan' }), /GIAPHA_MAT_KHAU_SUA ngắn hơn 10/);
   assert.match(checkConfig({ ...cfg, SECRET: 'ngan' }), /GIAPHA_SECRET/);
 });
 

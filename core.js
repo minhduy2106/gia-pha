@@ -7,13 +7,18 @@ const enc = new TextEncoder();
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const fromB64url = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)));
 
-// Cấu hình thiếu hoặc yếu thì trả về lời nhắc, đủ thì trả null
+// Cấu hình thiếu hoặc yếu thì trả về lời nhắc nói rõ chỗ sai (không lộ giá trị), đủ thì trả null
 function checkConfig(cfg) {
-  if ((cfg.MK_XEM || '').length < 6 || (cfg.MK_SUA || '').length < 10 || cfg.MK_XEM === cfg.MK_SUA) {
-    return 'Cần đặt GIAPHA_MAT_KHAU_XEM (>= 6 ký tự) và GIAPHA_MAT_KHAU_SUA (>= 10 ký tự, khác mật khẩu xem)';
-  }
-  if ((cfg.SECRET || '').length < 32) return 'Cần đặt GIAPHA_SECRET (chuỗi ngẫu nhiên, >= 32 ký tự)';
-  return null;
+  const problems = [];
+  const need = (name, value, min) => {
+    if (!value) problems.push(`chưa có ${name}`);
+    else if (value.length < min) problems.push(`${name} ngắn hơn ${min} ký tự`);
+  };
+  need('GIAPHA_MAT_KHAU_XEM', cfg.MK_XEM, 6);
+  need('GIAPHA_MAT_KHAU_SUA', cfg.MK_SUA, 10);
+  if (cfg.MK_XEM && cfg.MK_XEM === cfg.MK_SUA) problems.push('mật khẩu xem và mật khẩu sửa đang giống nhau');
+  need('GIAPHA_SECRET', cfg.SECRET, 32);
+  return problems.length ? `Cấu hình chưa đạt: ${problems.join('; ')}.` : null;
 }
 
 // db: xem db-node.js / db-d1.js. cfg: TEN_HO, MK_XEM, MK_SUA, SECRET, HTTPS.
