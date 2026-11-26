@@ -1,0 +1,14 @@
+# Cloudflare Pages + D1. Deploy: npm run build && npx wrangler pages deploy
+# Mật khẩu không ghi ở đây; đặt bằng: npx wrangler pages secret put <TÊN> --project-name sogiapha
+name = "sogiapha"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-09-01"
+
+[vars]
+GIAPHA_TEN_HO = "Gia phả họ Nguyễn"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "giapha"
+database_id = "CHUA_TAO"
+migrations_dir = "migrations"

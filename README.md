@@ -23,9 +23,31 @@ npm test
 
 Dữ liệu nằm trong thư mục `data/` (file SQLite `giapha.db` và khóa ký cookie `secret`). Sao lưu thì chép cả thư mục này, hoặc tải file CSV ở trang Nhập/Xuất.
 
-## Đưa lên mạng
+## Cấu trúc
 
-Cần một máy chủ chạy Node liên tục và có ổ đĩa giữ được dữ liệu, ví dụ VPS, Fly.io có volume, hoặc Railway. Vercel và Netlify không dùng được vì mất file SQLite. Đặt HTTPS phía trước (Caddy hoặc Cloudflare), và khai `GIAPHA_HTTPS=1`.
+- `core.js`: lõi app (trang, đăng nhập, phân quyền). Nhận `Request`, trả `Response` theo chuẩn Web, nên chạy được ở cả 2 nơi.
+- `data.js`, `lunar.js`: dữ liệu gia phả, âm lịch, CSV/GEDCOM/iCalendar.
+- `server.js` + `db-node.js`: chạy trên máy (Node + SQLite).
+- `worker.js` + `db-d1.js`: chạy trên Cloudflare Pages + D1.
+- `migrations/`: cấu trúc database, dùng chung cho cả SQLite và D1.
+
+## Đưa lên Cloudflare (Pages + D1)
+
+Làm một lần:
+
+```bash
+npx wrangler login
+npx wrangler d1 create giapha            # chép database_id vào wrangler.toml
+npx wrangler d1 migrations apply giapha --remote
+npx wrangler pages project create sogiapha --production-branch main
+npx wrangler pages secret put GIAPHA_MAT_KHAU_XEM --project-name sogiapha
+npx wrangler pages secret put GIAPHA_MAT_KHAU_SUA --project-name sogiapha
+openssl rand -hex 32 | npx wrangler pages secret put GIAPHA_SECRET --project-name sogiapha
+```
+
+Sau đó mỗi lần deploy: `npm run deploy`, hoặc push lên `main` để GitHub Actions tự deploy (cần secret `CLOUDFLARE_API_TOKEN` và `CLOUDFLARE_ACCOUNT_ID` trong repo).
+
+D1 tự giữ lịch sử 30 ngày (Time Travel), khôi phục được bằng `npx wrangler d1 time-travel restore giapha --timestamp=...`.
 
 ## Chưa làm
 

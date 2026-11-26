@@ -1,69 +1,14 @@
-const { DatabaseSync } = require('node:sqlite');
 const { jdFromDate, jdToDate, solarToLunar, gioJd } = require('./lunar');
 
-// Người và quan hệ lưu dạng đồ thị (không dùng parent_id) để chứa được nhiều vợ, con nuôi, con thừa tự, kết hôn trong họ.
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS person (
-  id INTEGER PRIMARY KEY,
-  ma TEXT UNIQUE,
-  ho_ten TEXT NOT NULL,
-  gioi_tinh TEXT NOT NULL DEFAULT '',
-  chi TEXT NOT NULL DEFAULT '',
-  doi INTEGER,
-  nam_sinh TEXT NOT NULL DEFAULT '',
-  nam_mat TEXT NOT NULL DEFAULT '',
-  gio_ngay INTEGER,
-  gio_thang INTEGER,
-  con_song INTEGER NOT NULL DEFAULT 1,
-  tranh_chap INTEGER NOT NULL DEFAULT 0,
-  ghi_chu TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS quan_he (
-  id INTEGER PRIMARY KEY,
-  loai TEXT NOT NULL CHECK (loai IN ('cha_me', 'vo_chong')),
-  a INTEGER NOT NULL REFERENCES person(id) ON DELETE CASCADE,
-  b INTEGER NOT NULL REFERENCES person(id) ON DELETE CASCADE,
-  kieu TEXT NOT NULL DEFAULT 'ruot' CHECK (kieu IN ('ruot', 'nuoi', 'thua_tu')),
-  thu_tu INTEGER,
-  UNIQUE (loai, a, b)
-);
-CREATE TABLE IF NOT EXISTS nhat_ky (
-  id INTEGER PRIMARY KEY,
-  luc TEXT NOT NULL,
-  ai TEXT NOT NULL,
-  viec TEXT NOT NULL,
-  chi_tiet TEXT
-);
-CREATE TRIGGER IF NOT EXISTS nhat_ky_khong_sua BEFORE UPDATE ON nhat_ky BEGIN SELECT RAISE(ABORT, 'nhat_ky chi ghi them'); END;
-CREATE TRIGGER IF NOT EXISTS nhat_ky_khong_xoa BEFORE DELETE ON nhat_ky BEGIN SELECT RAISE(ABORT, 'nhat_ky chi ghi them'); END;
-`;
-// quan_he: loai='cha_me' thì a là cha/mẹ của b; loai='vo_chong' thì luôn lưu a < b, thu_tu là vợ thứ mấy.
+// Cấu trúc bảng ở migrations/0001_init.sql. Mọi hàm đọc ghi nhận `db` có all/first/batch (xem db-node.js, db-d1.js).
+// Ghi luôn gom vào một batch: trọn gói hoặc không ghi gì, chạy được trên cả SQLite và Cloudflare D1.
 
 const KIEU_CON = { ruot: 'ruột', nuoi: 'nuôi', thua_tu: 'thừa tự' };
 
-function openDb(file) {
-  const db = new DatabaseSync(file);
-  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
-  db.exec(SCHEMA);
-  return db;
-}
-
-function tx(db, fn) {
-  db.exec('BEGIN');
-  try {
-    const r = fn();
-    db.exec('COMMIT');
-    return r;
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
-  }
-}
-
-function log(db, ai, viec, chiTiet) {
-  db.prepare('INSERT INTO nhat_ky (luc, ai, viec, chi_tiet) VALUES (?, ?, ?, ?)')
-    .run(new Date().toISOString(), ai, viec, JSON.stringify(chiTiet ?? null));
-}
+const logStmt = (ai, viec, chiTiet) => ({
+  sql: 'INSERT INTO nhat_ky (luc, ai, viec, chi_tiet) VALUES (?, ?, ?, ?)',
+  params: [new Date().toISOString(), ai, viec, JSON.stringify(chiTiet ?? null)],
+});
 
 const truthy = (v) => v === true || v === 1 || ['1', 'on', 'x', 'có', 'co'].includes(String(v ?? '').trim().toLowerCase());
 
@@ -122,57 +67,44 @@ function cleanPerson(input) {
 
 const COLS_P = ['ho_ten', 'gioi_tinh', 'chi', 'doi', 'nam_sinh', 'nam_mat', 'gio_ngay', 'gio_thang', 'con_song', 'tranh_chap', 'ghi_chu'];
 
-const getPerson = (db, id) => db.prepare('SELECT * FROM person WHERE id = ?').get(id);
+const getPerson = (db, id) => db.first('SELECT * FROM person WHERE id = ?', [id]);
 
-function insertPerson(db, p, ma) {
-  const { lastInsertRowid } = db.prepare(`INSERT INTO person (${COLS_P.join(',')}) VALUES (${COLS_P.map(() => '?').join(',')})`)
-    .run(...COLS_P.map((k) => p[k]));
-  const id = Number(lastInsertRowid);
-  db.prepare('UPDATE person SET ma = ? WHERE id = ?').run(ma || `P${id}`, id);
-  return id;
+// Thêm người (upsert = false: trùng mã thì báo lỗi) hoặc thêm/cập nhật theo mã (upsert = true, dùng khi nhập file)
+const personStmt = (p, ma, upsert) => ({
+  sql: `INSERT INTO person (ma, ${COLS_P.join(', ')}) VALUES (?, ${COLS_P.map(() => '?').join(', ')})` +
+    (upsert ? ` ON CONFLICT (ma) DO UPDATE SET ${COLS_P.map((k) => `${k} = excluded.${k}`).join(', ')}` : ''),
+  params: [ma, ...COLS_P.map((k) => p[k])],
+});
+
+// Quan hệ chỉ ra người bằng mã, nên dùng được cả với người vừa thêm trong cùng batch
+const BY_MA = '(SELECT id FROM person WHERE ma = ?)';
+function relStmt({ loai, a, b, kieu = 'ruot', thu_tu = null }) {
+  if (loai === 'cha_me') {
+    return {
+      sql: `INSERT INTO quan_he (loai, a, b, kieu) SELECT 'cha_me', ${BY_MA}, ${BY_MA}, ? WHERE true ON CONFLICT (loai, a, b) DO UPDATE SET kieu = excluded.kieu`,
+      params: [a, b, kieu],
+    };
+  }
+  return {
+    sql: `INSERT INTO quan_he (loai, a, b, thu_tu) SELECT 'vo_chong', min(x, y), max(x, y), ? FROM (SELECT ${BY_MA} AS x, ${BY_MA} AS y) WHERE true ON CONFLICT (loai, a, b) DO UPDATE SET thu_tu = COALESCE(excluded.thu_tu, thu_tu)`,
+    params: [thu_tu, a, b],
+  };
 }
 
-function updatePersonRow(db, id, p) {
-  db.prepare(`UPDATE person SET ${COLS_P.map((k) => `${k} = ?`).join(',')} WHERE id = ?`).run(...COLS_P.map((k) => p[k]), id);
+// Đồ thị cha mẹ theo mã: con -> tập mã cha mẹ
+function parentGraph(m) {
+  const g = new Map();
+  for (const r of m.rels) if (r.loai === 'cha_me') addParent(g, m.byId.get(r.b).ma, m.byId.get(r.a).ma);
+  return g;
 }
+const addParent = (g, child, parent) => (g.get(child) || g.set(child, new Set()).get(child)).add(parent);
 
-function createPerson(db, input, ai) {
-  const p = cleanPerson(input);
-  return tx(db, () => {
-    const id = insertPerson(db, p);
-    log(db, ai, 'them_nguoi', { id, sau: p });
-    return id;
-  });
-}
-
-function updatePerson(db, id, input, ai) {
-  const p = cleanPerson(input);
-  tx(db, () => {
-    const truoc = getPerson(db, id);
-    if (!truoc) throw new Error('Không tìm thấy người này');
-    updatePersonRow(db, id, p);
-    log(db, ai, 'sua_nguoi', { id, truoc, sau: p });
-  });
-}
-
-function deletePerson(db, id, ai) {
-  tx(db, () => {
-    const truoc = getPerson(db, id);
-    if (!truoc) throw new Error('Không tìm thấy người này');
-    const quanHe = db.prepare('SELECT * FROM quan_he WHERE a = ? OR b = ?').all(id, id);
-    db.prepare('DELETE FROM person WHERE id = ?').run(id);
-    log(db, ai, 'xoa_nguoi', { id, truoc, quanHe });
-  });
-}
-
-// x có phải tổ tiên của y không (đi ngược lên theo quan hệ cha_me)
-function isAncestor(db, x, y) {
-  const parentsOf = db.prepare("SELECT a FROM quan_he WHERE loai = 'cha_me' AND b = ?");
-  const seen = new Set();
+// x có phải tổ tiên của y không (đi ngược lên theo quan hệ cha mẹ)
+function isAncestor(g, x, y) {
+  const seen = new Set([y]);
   const queue = [y];
   while (queue.length) {
-    const cur = queue.shift();
-    for (const { a } of parentsOf.all(cur)) {
+    for (const a of g.get(queue.shift()) || []) {
       if (a === x) return true;
       if (!seen.has(a)) { seen.add(a); queue.push(a); }
     }
@@ -180,48 +112,82 @@ function isAncestor(db, x, y) {
   return false;
 }
 
-// Thêm quan hệ, không ghi nhật ký. Dùng chung cho form và cho import CSV.
-function insertRelation(db, { loai, a, b, kieu = 'ruot', thu_tu = null }) {
-  a = Number(a); b = Number(b);
-  if (!getPerson(db, a) || !getPerson(db, b)) throw new Error('Không tìm thấy người trong quan hệ');
+// Kiểm tra quan hệ (theo mã) trước khi ghi, rồi thêm vào đồ thị để kiểm tra các quan hệ sau trong cùng lần nhập
+function checkRel(g, { loai, a, b, kieu = 'ruot' }) {
   if (a === b) throw new Error('Không thể tạo quan hệ với chính mình');
   if (loai === 'cha_me') {
     if (!KIEU_CON[kieu]) throw new Error('Kiểu con không hợp lệ');
-    if (isAncestor(db, b, a)) throw new Error('Quan hệ này tạo vòng lặp (con lại là tổ tiên của cha/mẹ)');
-    db.prepare("INSERT INTO quan_he (loai, a, b, kieu) VALUES ('cha_me', ?, ?, ?) ON CONFLICT (loai, a, b) DO UPDATE SET kieu = excluded.kieu")
-      .run(a, b, kieu);
-  } else if (loai === 'vo_chong') {
-    if (a > b) [a, b] = [b, a];
-    db.prepare("INSERT INTO quan_he (loai, a, b, thu_tu) VALUES ('vo_chong', ?, ?, ?) ON CONFLICT (loai, a, b) DO UPDATE SET thu_tu = COALESCE(excluded.thu_tu, thu_tu)")
-      .run(a, b, thu_tu);
-  } else {
+    if (isAncestor(g, b, a)) throw new Error('Quan hệ này tạo vòng lặp (con lại là tổ tiên của cha/mẹ)');
+    addParent(g, b, a);
+  } else if (loai !== 'vo_chong') {
     throw new Error('Loại quan hệ không hợp lệ');
   }
 }
 
-function addRelation(db, rel, ai) {
-  tx(db, () => {
-    insertRelation(db, rel);
-    log(db, ai, 'them_quan_he', rel);
-  });
+// Mã cho người thêm bằng tay: P + (số lớn nhất đang dùng + 1)
+const nextMa = (m) => `P${m.people.reduce((mx, p) => Math.max(mx, p.id, Number(/^P(\d+)$/.exec(p.ma || '')?.[1] || 0)), 0) + 1}`;
+
+// Thêm người; `link` để nối luôn với người đã có: { loai: 'cha_me', voi: idChaMe } hoặc { loai: 'vo_chong', voi: idVoChong }
+async function createPerson(db, input, ai, link = null) {
+  const p = cleanPerson(input);
+  const m = await loadAll(db);
+  const ma = nextMa(m);
+  const stmts = [personStmt(p, ma, false), logStmt(ai, 'them_nguoi', { ma, sau: p })];
+  if (link) {
+    const other = m.byId.get(Number(link.voi));
+    if (!other) throw new Error('Không tìm thấy người để nối');
+    const rel = link.loai === 'cha_me' ? { loai: 'cha_me', a: other.ma, b: ma, kieu: 'ruot' } : { loai: 'vo_chong', a: other.ma, b: ma };
+    checkRel(parentGraph(m), rel);
+    stmts.push(relStmt(rel), logStmt(ai, 'them_quan_he', rel));
+  }
+  await db.batch(stmts);
+  return (await db.first('SELECT id FROM person WHERE ma = ?', [ma])).id;
 }
 
-function deleteRelation(db, id, ai) {
-  tx(db, () => {
-    const truoc = db.prepare('SELECT * FROM quan_he WHERE id = ?').get(id);
-    if (!truoc) throw new Error('Không tìm thấy quan hệ');
-    db.prepare('DELETE FROM quan_he WHERE id = ?').run(id);
-    log(db, ai, 'xoa_quan_he', { truoc });
-  });
+async function updatePerson(db, id, input, ai) {
+  const p = cleanPerson(input);
+  const truoc = await getPerson(db, id);
+  if (!truoc) throw new Error('Không tìm thấy người này');
+  await db.batch([
+    { sql: `UPDATE person SET ${COLS_P.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`, params: [...COLS_P.map((k) => p[k]), id] },
+    logStmt(ai, 'sua_nguoi', { id, truoc, sau: p }),
+  ]);
+}
+
+async function deletePerson(db, id, ai) {
+  const truoc = await getPerson(db, id);
+  if (!truoc) throw new Error('Không tìm thấy người này');
+  const quanHe = await db.all('SELECT * FROM quan_he WHERE a = ? OR b = ?', [id, id]);
+  await db.batch([
+    { sql: 'DELETE FROM quan_he WHERE a = ? OR b = ?', params: [id, id] },
+    { sql: 'DELETE FROM person WHERE id = ?', params: [id] },
+    logStmt(ai, 'xoa_nguoi', { id, truoc, quanHe }),
+  ]);
+}
+
+// rel.a, rel.b là id người (từ form)
+async function addRelation(db, rel, ai) {
+  const m = await loadAll(db);
+  const pa = m.byId.get(Number(rel.a)), pb = m.byId.get(Number(rel.b));
+  if (!pa || !pb) throw new Error('Không tìm thấy người trong quan hệ');
+  const byMa = { ...rel, a: pa.ma, b: pb.ma };
+  checkRel(parentGraph(m), byMa);
+  await db.batch([relStmt(byMa), logStmt(ai, 'them_quan_he', rel)]);
+}
+
+async function deleteRelation(db, id, ai) {
+  const truoc = await db.first('SELECT * FROM quan_he WHERE id = ?', [id]);
+  if (!truoc) throw new Error('Không tìm thấy quan hệ');
+  await db.batch([{ sql: 'DELETE FROM quan_he WHERE id = ?', params: [id] }, logStmt(ai, 'xoa_quan_he', { truoc })]);
 }
 
 const push = (map, k, v) => (map.get(k) || map.set(k, []).get(k)).push(v);
 const yearNum = (s) => (/\d{3,4}/.exec(s || '') || [Infinity])[0] * 1;
 
 // Nạp toàn bộ họ vào bộ nhớ. Một họ chỉ vài nghìn người nên làm vậy là đủ.
-function loadAll(db) {
-  const people = db.prepare('SELECT * FROM person ORDER BY id').all();
-  const rels = db.prepare('SELECT * FROM quan_he ORDER BY id').all();
+async function loadAll(db) {
+  const people = await db.all('SELECT * FROM person ORDER BY id');
+  const rels = await db.all('SELECT * FROM quan_he ORDER BY id');
   const byId = new Map(people.map((p) => [p.id, p]));
   const parentsOf = new Map(), childrenOf = new Map(), spousesOf = new Map();
   for (const r of rels) {
@@ -355,7 +321,7 @@ const splitRefs = (s) => String(s || '').split(';').map((x) => x.trim()).filter(
   .map((x) => { const [ma, extra = ''] = x.split(':').map((y) => y.trim()); return { ma, extra }; });
 
 // Nhập CSV: cập nhật theo cột `ma`, mã chưa có thì thêm người mới. Có một lỗi là bỏ toàn bộ, không ghi gì.
-function importCsv(db, input, ai) {
+async function importCsv(db, input, ai) {
   const rows = parseCsv(input);
   if (rows.length < 2) throw new Error('File trống hoặc chỉ có dòng tiêu đề');
   const head = rows[0].map((h) => h.trim().toLowerCase());
@@ -369,12 +335,14 @@ const importAny = (db, input, ai) =>
   (/^﻿?\s*0\s+HEAD/.test(input) ? importGedcom(db, input, ai) : importCsv(db, input, ai));
 
 // Lõi nhập dùng chung cho CSV và GEDCOM. Mỗi bản ghi có dạng giống một dòng CSV, cộng thêm `label` để báo lỗi.
-function importRecords(db, recs, ai, viec) {
+async function importRecords(db, recs, ai, viec) {
+  const m = await loadAll(db);
+  const existing = new Set(m.people.map((p) => p.ma));
   const errors = [];
   const stats = { them: 0, sua: 0, quan_he: 0 };
   const seenMa = new Set();
-  tx(db, () => {
-    const byMa = db.prepare('SELECT id FROM person WHERE ma = ?');
+  const stmts = [];
+  {
     for (const r of recs) {
       try {
         if (!r.ma) throw new Error('Thiếu mã');
@@ -388,26 +356,29 @@ function importRecords(db, recs, ai, viec) {
           gio_thang: gio?.[2],
           con_song: r.con_song !== undefined && r.con_song !== '' ? r.con_song : !(r.nam_mat || r.gio_am || r.ngay_mat_duong),
         });
-        const found = byMa.get(r.ma);
-        if (found) { updatePersonRow(db, found.id, p); stats.sua++; } else { insertPerson(db, p, r.ma); stats.them++; }
+        stmts.push(personStmt(p, r.ma, true));
+        if (existing.has(r.ma)) stats.sua++; else stats.them++;
       } catch (e) {
         errors.push(`${r.label}: ${e.message}`);
       }
     }
     if (!errors.length) {
+      const known = new Set([...existing, ...seenMa]);
+      const g = parentGraph(m);
       for (const r of recs) {
-        const id = byMa.get(r.ma).id;
         try {
           for (const { ma, extra } of splitRefs(r.ma_cha_me)) {
-            const parent = byMa.get(ma);
-            if (!parent) throw new Error(`Không có mã cha/mẹ ${ma}`);
-            insertRelation(db, { loai: 'cha_me', a: parent.id, b: id, kieu: extra || 'ruot' });
+            if (!known.has(ma)) throw new Error(`Không có mã cha/mẹ ${ma}`);
+            const rel = { loai: 'cha_me', a: ma, b: r.ma, kieu: extra || 'ruot' };
+            checkRel(g, rel);
+            stmts.push(relStmt(rel));
             stats.quan_he++;
           }
           for (const { ma, extra } of splitRefs(r.ma_vo_chong)) {
-            const sp = byMa.get(ma);
-            if (!sp) throw new Error(`Không có mã vợ/chồng ${ma}`);
-            insertRelation(db, { loai: 'vo_chong', a: id, b: sp.id, thu_tu: intOrNull(extra, 1, 20, 'Thứ tự vợ/chồng') });
+            if (!known.has(ma)) throw new Error(`Không có mã vợ/chồng ${ma}`);
+            const rel = { loai: 'vo_chong', a: r.ma, b: ma, thu_tu: intOrNull(extra, 1, 20, 'Thứ tự vợ/chồng') };
+            checkRel(g, rel);
+            stmts.push(relStmt(rel));
             stats.quan_he++;
           }
         } catch (e) {
@@ -415,9 +386,10 @@ function importRecords(db, recs, ai, viec) {
         }
       }
     }
-    if (errors.length) throw Object.assign(new Error('Nhập thất bại, chưa ghi gì'), { errors });
-    log(db, ai, viec, stats);
-  });
+  }
+  if (errors.length) throw Object.assign(new Error('Nhập thất bại, chưa ghi gì'), { errors });
+  stmts.push(logStmt(ai, viec, stats));
+  await db.batch(stmts);
   return stats;
 }
 
@@ -448,7 +420,7 @@ function gFullDate(s) {
   return mo ? `${Number(m[1])}/${mo}/${m[3]}` : '';
 }
 
-function importGedcom(db, input, ai) {
+async function importGedcom(db, input, ai) {
   const top = parseGedcom(input);
   const indis = top.filter((n) => n.tag === 'INDI' && n.xref);
   if (!indis.length) throw new Error('File GEDCOM không có người nào');
@@ -604,6 +576,6 @@ function toIcs(people, fromJd) {
 }
 
 module.exports = {
-  KIEU_CON, CSV_COLS, openDb, cleanPerson, getPerson, createPerson, updatePerson, deletePerson,
+  KIEU_CON, CSV_COLS, cleanPerson, getPerson, createPerson, updatePerson, deletePerson,
   addRelation, deleteRelation, loadAll, roots, todayJd, upcomingGio, parseCsv, toCsv, importCsv, importGedcom, importAny, toGedcom, toIcs,
 };
