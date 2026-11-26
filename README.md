@@ -9,7 +9,7 @@ Tính năng:
 - Nút "Báo cho họ hàng": gửi lời nhắc giỗ qua Zalo hoặc Messenger (trên điện thoại), hoặc chép lời nhắn (trên máy tính).
 - Nhập từ Excel (CSV) hoặc GEDCOM (MyHeritage, FamilySearch, Gramps, GensTree...). Xuất ra CSV và GEDCOM; xuất rồi nhập lại không mất thông tin. In hoặc lưu PDF bằng nút In.
 - Tự sao lưu mỗi ngày vào `data/backups`, giữ 30 ngày gần nhất.
-- Hai mật khẩu: mật khẩu xem gửi cho cả họ, mật khẩu sửa chỉ 1-2 người giữ sổ biết.
+- Một mật khẩu chung (ai đăng nhập cũng sửa được), hoặc tách hai mật khẩu: mật khẩu xem gửi cho cả họ, mật khẩu sửa chỉ 1-2 người giữ sổ biết.
 - Nhật ký sửa đổi chỉ ghi thêm, không sửa hay xóa được.
 - Đánh dấu được thông tin đang tranh chấp.
 

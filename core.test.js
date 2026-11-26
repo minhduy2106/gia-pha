@@ -32,10 +32,25 @@ const CSV = [
 
 test('checkConfig bắt cấu hình yếu', () => {
   assert.strictEqual(checkConfig(cfg), null);
-  assert.match(checkConfig({ ...cfg, MK_SUA: 'xem-1234567890', MK_XEM: 'xem-1234567890' }), /giống nhau/);
-  assert.match(checkConfig({ ...cfg, MK_XEM: '' }), /chưa có GIAPHA_MAT_KHAU_XEM/);
+  // một mật khẩu chung: trùng nhau hoặc bỏ trống mật khẩu xem đều hợp lệ
+  assert.strictEqual(checkConfig({ ...cfg, MK_XEM: cfg.MK_SUA }), null);
+  assert.strictEqual(checkConfig({ ...cfg, MK_XEM: undefined }), null);
+  assert.match(checkConfig({ ...cfg, MK_XEM: 'ngan' }), /GIAPHA_MAT_KHAU_XEM ngắn hơn 6/);
   assert.match(checkConfig({ ...cfg, MK_SUA: 'ngan' }), /GIAPHA_MAT_KHAU_SUA ngắn hơn 10/);
+  assert.match(checkConfig({ ...cfg, MK_SUA: '' }), /chưa có GIAPHA_MAT_KHAU_SUA/);
   assert.match(checkConfig({ ...cfg, SECRET: 'ngan' }), /GIAPHA_SECRET/);
+});
+
+test('một mật khẩu chung: đăng nhập là có quyền sửa; bỏ trống mật khẩu xem không mở cửa sau', async () => {
+  for (const MK_XEM of [cfg.MK_SUA, undefined]) {
+    const app = createApp({ db: d1Db(fakeD1()), cfg: { ...cfg, MK_XEM }, platform: { backup } });
+    const post = (mk) => app.handle(new Request('http://gia.test/dang-nhap', { method: 'POST', body: new URLSearchParams({ mat_khau: mk }) }), { ip: '3.3.3.3' });
+    const ok = await post(cfg.MK_SUA);
+    const cookie = ok.headers.get('set-cookie').split(';')[0];
+    const them = await app.handle(new Request('http://gia.test/them', { headers: { cookie } }), {});
+    assert.strictEqual(them.status, 200);
+    for (const guess of ['undefined', '', 'null']) assert.strictEqual((await post(guess)).status, 401);
+  }
 });
 
 test('luồng chính: đăng nhập, nhập file, xem cây, giỗ, thêm con, phân quyền', async () => {

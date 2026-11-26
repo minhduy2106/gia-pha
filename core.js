@@ -14,9 +14,9 @@ function checkConfig(cfg) {
     if (!value) problems.push(`chưa có ${name}`);
     else if (value.length < min) problems.push(`${name} ngắn hơn ${min} ký tự`);
   };
-  need('GIAPHA_MAT_KHAU_XEM', cfg.MK_XEM, 6);
+  // Một mật khẩu chung: để trống GIAPHA_MAT_KHAU_XEM hoặc đặt giống GIAPHA_MAT_KHAU_SUA, khi đó ai đăng nhập cũng sửa được
   need('GIAPHA_MAT_KHAU_SUA', cfg.MK_SUA, 10);
-  if (cfg.MK_XEM && cfg.MK_XEM === cfg.MK_SUA) problems.push('mật khẩu xem và mật khẩu sửa đang giống nhau');
+  if (cfg.MK_XEM && cfg.MK_XEM !== cfg.MK_SUA && cfg.MK_XEM.length < 6) problems.push('GIAPHA_MAT_KHAU_XEM ngắn hơn 6 ký tự');
   need('GIAPHA_SECRET', cfg.SECRET, 32);
   return problems.length ? `Cấu hình chưa đạt: ${problems.join('; ')}.` : null;
 }
@@ -550,7 +550,8 @@ route('POST', /^\/dang-nhap$/, null, async (req, res, _who, _m, _url, b, info) =
   const ip = info.ip || 'khong-ro';
   if (await locked(ip)) return loginPage(res, 'Sai quá nhiều lần, thử lại sau 15 phút', 429);
   const mk = b.mat_khau || '';
-  const role = (await safeEq(mk, MK_SUA)) ? 'sua' : (await safeEq(mk, MK_XEM)) ? 'xem' : null;
+  // Mật khẩu sửa xét trước, nên khi chỉ dùng một mật khẩu chung thì người đăng nhập luôn có quyền sửa
+  const role = (await safeEq(mk, MK_SUA)) ? 'sua' : MK_XEM && (await safeEq(mk, MK_XEM)) ? 'xem' : null;
   if (!role) { await noteFail(ip); return loginPage(res, 'Sai mật khẩu', 401); }
   await clearFails(ip);
   const name = String(b.ten || '').trim().slice(0, 60) || (role === 'sua' ? 'người sửa' : 'người xem');
