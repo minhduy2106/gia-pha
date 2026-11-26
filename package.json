@@ -1,0 +1,11 @@
+{
+  "name": "gia-pha",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quản lý gia phả cho một dòng họ",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --env-file=.env --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  }
+}
